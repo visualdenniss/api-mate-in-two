@@ -24,6 +24,23 @@ const processPuzzleData = (puzzle) => {
   return { puzzleAuthor, puzzleId, puzzleSource, fen, puzzleDbID };
 };
 
+// Function to process multiple puzzle data and convert to desired format
+const processMultiplePuzzleData = (puzzles) => {
+  if (puzzles.length === 0) throw new Error("No puzzles found");
+
+  return puzzles.map((puzzle) => {
+    const {
+      authors: puzzleAuthor,
+      id: puzzleId,
+      _id: puzzleDbID,
+      source: puzzleSource,
+      algebraic,
+    } = puzzle;
+    const fen = convertToFen(algebraic);
+    return { puzzleAuthor, puzzleId, puzzleSource, fen, puzzleDbID };
+  });
+};
+
 // Function to handle errors
 const handleError = (res, error, message = "Internal Server Error") => {
   console.error(error);
@@ -33,5 +50,6 @@ const handleError = (res, error, message = "Internal Server Error") => {
 module.exports = {
   convertToFen,
   processPuzzleData,
+  processMultiplePuzzleData,
   handleError,
 };

@@ -1,5 +1,5 @@
 const { connectToDb, getDb } = require("./db");
-const { processPuzzleData, handleError } = require("./utils");
+const { handleError, processMultiplePuzzleData } = require("./utils");
 
 // Function to fetch a random puzzle from the database
 const fetchRandomPuzzles = (puzzlesCollection) => {
@@ -24,7 +24,7 @@ const getPuzzles = (req, res) => {
     fetchRandomPuzzles(puzzlesCollection)
       .then((randomPuzzles) => {
         try {
-          const matePuzzles = processPuzzleData(randomPuzzles);
+          const matePuzzles = processMultiplePuzzleData(randomPuzzles);
           sendResponse(res, matePuzzles);
         } catch (error) {
           res.status(404).json({ error: error.message });
