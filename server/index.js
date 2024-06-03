@@ -6,6 +6,7 @@ const bodyParser = require("body-parser"); // Import bodyParser for parsing POST
 const { getPuzzles } = require("./getPuzzles");
 const { getPuzzle } = require("./getPuzzle");
 const fenToImg = require("./fenToImg");
+// const { getAllAuthorList } = require("./getAllAuthorList");
 
 // Middleware for parsing JSON bodies
 app.use(bodyParser.json());
@@ -16,6 +17,7 @@ app.use(express.json());
 
 app.get("/", getPuzzles);
 app.post("/fen", fenToImg); // Change route to accept POST requests
+// app.get("/api/authors", getAllAuthorList); // Gets all authors
 
 app.get("/:id", getPuzzle);
 
