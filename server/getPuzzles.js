@@ -2,8 +2,18 @@ const { connectToDb, getDb } = require("./db");
 const { handleError, processMultiplePuzzleData } = require("./utils");
 
 // Function to fetch a random puzzle from the database
-const fetchRandomPuzzles = (puzzlesCollection) => {
-  return puzzlesCollection.aggregate([{ $sample: { size: 30 } }]).toArray();
+const fetchRandomPuzzles = (puzzlesCollection, exclude = []) => {
+  if (exclude.length > 0) {
+    console.log(exclude);
+    return puzzlesCollection
+      .aggregate([
+        { $match: { puzzleId: { $nin: exclude } } },
+        { $sample: { size: 30 } },
+      ])
+      .toArray();
+  } else {
+    return puzzlesCollection.aggregate([{ $sample: { size: 30 } }]).toArray();
+  }
 };
 
 // Function to handle sending the response
@@ -20,8 +30,8 @@ const getPuzzles = (req, res) => {
 
     const db = getDb();
     const puzzlesCollection = db.collection("problems");
-
-    fetchRandomPuzzles(puzzlesCollection)
+    const exclude = req.query.exclude ? req.query.exclude.split(",") : [];
+    fetchRandomPuzzles(puzzlesCollection, exclude)
       .then((randomPuzzles) => {
         try {
           const matePuzzles = processMultiplePuzzleData(randomPuzzles);
