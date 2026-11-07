@@ -1,5 +1,6 @@
 const { connectToDb, getDb } = require("./db");
 const { handleError, processMultiplePuzzleData } = require("./utils");
+const { parseExcludedIds } = require("./validation");
 
 // Function to fetch a random puzzle from the database
 const fetchRandomPuzzles = (puzzlesCollection, exclude = []) => {
@@ -22,6 +23,11 @@ const sendResponse = (res, matePuzzles) => {
 };
 
 const getPuzzles = (req, res) => {
+  const exclude = parseExcludedIds(req.query.exclude);
+  if (exclude === null) {
+    return res.status(400).json({ error: "Invalid exclude list" });
+  }
+
   connectToDb((err) => {
     if (err) {
       console.error("Failed to connect to database:", err);
@@ -30,7 +36,6 @@ const getPuzzles = (req, res) => {
 
     const db = getDb();
     const puzzlesCollection = db.collection("problems");
-    const exclude = req.query.exclude ? req.query.exclude.split(",") : [];
     fetchRandomPuzzles(puzzlesCollection, exclude)
       .then((randomPuzzles) => {
         try {

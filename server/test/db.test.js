@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
+const validation = require("../validation");
 
 function loadModule(filename, dependencies, globals = {}) {
   const module = { exports: {} };
@@ -185,7 +186,7 @@ const tests = [
     });
     const fixture = loadDatabase(async () => client);
     const utils = require("../utils");
-    const dependencies = { "./db": fixture.api, "./utils": utils };
+    const dependencies = { "./db": fixture.api, "./utils": utils, "./validation": validation };
     const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
     const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
     const [list, detail] = await Promise.all([
@@ -197,9 +198,133 @@ const tests = [
     assert.deepEqual(list.body, [detail.body]);
     assert.equal(detail.body.puzzleId, "123");
     assert.equal(typeof detail.body.fen, "string");
-    assert.equal((await callRoute(getPuzzle, { params: { id: "missing" } })).status, 404);
-    assert.equal((await callRoute(getPuzzles, { query: { exclude: ["123"] } })).status, 500);
+    assert.equal((await callRoute(getPuzzle, { params: { id: "999" } })).status, 404);
+    assert.equal((await callRoute(getPuzzles, { query: { exclude: ["123"] } })).status, 400);
     assert.equal((await callRoute(getPuzzles, { query: {} })).status, 200);
+    assert.equal(fixture.attempts(), 1);
+  }],
+  ["invalid puzzle IDs are rejected before any database access", async () => {
+    let connections = 0;
+    let databaseReads = 0;
+    const { getPuzzle } = loadModule("getPuzzle.js", {
+      "./db": {
+        connectToDb() { connections++; throw new Error("Unexpected database connection"); },
+        getDb() { databaseReads++; throw new Error("Unexpected database access"); },
+      },
+      "./utils": require("../utils"),
+      "./validation": validation,
+    });
+    const invalidIds = [
+      undefined, null, 123, 0, -1, true, false, [], ["123"], {}, { $ne: null },
+      new String("123"), { toString() { throw new Error("Unexpected ID coercion"); } },
+      "", "0", "00", "0123", "-123", "+123", "1.0", "1e3", "0x7b",
+      " 123", "123 ", "\t123", "123\n", "123\r", "123\r\n", "1\n23",
+      "123\u2028", "123\u2029", "123\0", "123abc", "../123", "1/2",
+      "%31%32%33", "$ne", '{"$ne":null}', "１２３", "١٢٣",
+      "1".repeat(13), "1".repeat(100000),
+    ];
+    for (const id of invalidIds) {
+      const response = await callRoute(getPuzzle, { params: { id } });
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error, "Invalid puzzle ID");
+    }
+    assert.equal(connections, 0);
+    assert.equal(databaseReads, 0);
+  }],
+  ["valid puzzle IDs reach the query unchanged and retain missing-puzzle responses", async () => {
+    const queriedIds = [];
+    const client = makeClient({
+      collection(name) {
+        assert.equal(name, "problems");
+        return {
+          async findOne(query) {
+            assert.deepEqual(Object.keys(query), ["id"]);
+            queriedIds.push(query.id);
+            return null;
+          },
+        };
+      },
+    });
+    const fixture = loadDatabase(async () => client);
+    const { getPuzzle } = loadModule("getPuzzle.js", {
+      "./db": fixture.api, "./utils": require("../utils"), "./validation": validation,
+    });
+    const validIds = ["1", "9", "123", "100000000000", "999999999999"];
+    for (const id of validIds) {
+      const response = await callRoute(getPuzzle, { params: { id } });
+      assert.equal(response.status, 404);
+      assert.equal(response.body.error, "Puzzle not found");
+    }
+    assert.deepEqual(queriedIds, validIds);
+    assert.equal(fixture.attempts(), 1);
+  }],
+  ["invalid exclusion lists are rejected before any database access", async () => {
+    let connections = 0;
+    let databaseReads = 0;
+    const { getPuzzles } = loadModule("getPuzzles.js", {
+      "./db": {
+        connectToDb() { connections++; throw new Error("Unexpected database connection"); },
+        getDb() { databaseReads++; throw new Error("Unexpected database access"); },
+      },
+      "./utils": require("../utils"),
+      "./validation": validation,
+    });
+    const parseQuery = require("express")().get("query parser fn");
+    const invalidLists = [
+      null, 0, 123, true, false, [], ["123"], ["123", "456"], {}, { $ne: null },
+      new String("123"), { split() { throw new Error("Unexpected input coercion"); } },
+      "", "0", "0123", "123,0", "123,0456", "123,,456", ",123", "123,",
+      "123, 456", "123 ,456", "123,456\n", "123,456\r\n", "123,\t456",
+      "123,456\0", "123,456\u2028", "123,456\u2029", "123,1.0", "123,1e3",
+      "123,-1", "123,+1", "123,abc", "$ne", '{"$ne":null}', "[123,456]",
+      "123,１２３", "123,١٢٣", "123,%34%35%36", "1".repeat(13),
+      Array(501).fill("1").join(","), "1".repeat(6500), "1,".repeat(100000),
+      ...["exclude=123&exclude=456", "exclude[]=123", "exclude[$ne]=123"]
+        .map((query) => parseQuery(query).exclude),
+    ];
+    for (const exclude of invalidLists) {
+      const response = await callRoute(getPuzzles, { query: { exclude } });
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error, "Invalid exclude list");
+    }
+    assert.equal(connections, 0);
+    assert.equal(databaseReads, 0);
+  }],
+  ["valid exclusion lists preserve literal string IDs and optional-list behavior", async () => {
+    const received = [];
+    const puzzle = { id: "123", algebraic: { white: ["Ka1"], black: ["Kh8"] } };
+    const client = makeClient({
+      collection(name) {
+        assert.equal(name, "problems");
+        return {
+          aggregate(pipeline) {
+            const match = pipeline.find((stage) => stage.$match);
+            received.push(match ? Array.from(Object.values(match.$match)[0].$nin) : []);
+            return { toArray: async () => [puzzle] };
+          },
+        };
+      },
+    });
+    const fixture = loadDatabase(async () => client);
+    const { getPuzzles } = loadModule("getPuzzles.js", {
+      "./db": fixture.api, "./utils": require("../utils"), "./validation": validation,
+    });
+    const parseQuery = require("express")().get("query parser fn");
+    const boundaryIds = Array(500).fill("999999999999");
+    const cases = [
+      [{}, []],
+      [{ exclude: undefined }, []],
+      [{ exclude: "1" }, ["1"]],
+      [{ exclude: "123,456" }, ["123", "456"]],
+      [{ exclude: "123,123" }, ["123", "123"]],
+      [{ exclude: boundaryIds.join(",") }, boundaryIds],
+      [parseQuery("exclude=%31%32%33%2C456"), ["123", "456"]],
+    ];
+    for (const [query, expected] of cases) {
+      const response = await callRoute(getPuzzles, { query });
+      assert.equal(response.status, 200);
+      assert.deepEqual(received[received.length - 1], expected);
+    }
     assert.equal(fixture.attempts(), 1);
   }],
   ["database query failures return controlled errors from both routes", async () => {
@@ -217,7 +342,7 @@ const tests = [
     const utils = loadModule("utils.js", { "./toFen": require("../toFen") }, {
       console: { error(error) { logged.push(error); } },
     });
-    const dependencies = { "./db": fixture.api, "./utils": utils };
+    const dependencies = { "./db": fixture.api, "./utils": utils, "./validation": validation };
     const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
     const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
     const responses = await Promise.all([

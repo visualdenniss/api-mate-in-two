@@ -1,5 +1,6 @@
 const { connectToDb, getDb } = require("./db");
 const { handleError, processPuzzleData } = require("./utils");
+const { isValidPuzzleId } = require("./validation");
 
 // Function to fetch a puzzle by its ID from the database
 const fetchPuzzleById = (puzzlesCollection, puzzleId) => {
@@ -13,6 +14,10 @@ const sendResponse = (res, matePuzzle) => {
 
 const getPuzzle = (req, res) => {
   const puzzleId = req.params.id;
+
+  if (!isValidPuzzleId(puzzleId)) {
+    return res.status(400).json({ error: "Invalid puzzle ID" });
+  }
 
   connectToDb((err) => {
     if (err) {
