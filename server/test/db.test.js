@@ -202,6 +202,36 @@ const tests = [
     assert.equal((await callRoute(getPuzzles, { query: {} })).status, 200);
     assert.equal(fixture.attempts(), 1);
   }],
+  ["database query failures return controlled errors from both routes", async () => {
+    const failure = new Error("Private database failure details");
+    const logged = [];
+    const client = makeClient({
+      collection() {
+        return {
+          aggregate: () => ({ toArray: async () => { throw failure; } }),
+          findOne: async () => { throw failure; },
+        };
+      },
+    });
+    const fixture = loadDatabase(async () => client);
+    const utils = loadModule("utils.js", { "./toFen": require("../toFen") }, {
+      console: { error(error) { logged.push(error); } },
+    });
+    const dependencies = { "./db": fixture.api, "./utils": utils };
+    const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
+    const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
+    const responses = await Promise.all([
+      callRoute(getPuzzles, { query: {} }),
+      callRoute(getPuzzle, { params: { id: "123" } }),
+    ]);
+    for (const response of responses) {
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error, "Internal Server Error");
+      assert.equal(JSON.stringify(response.body).includes(failure.message), false);
+    }
+    assert.deepEqual(logged, [failure, failure]);
+    assert.equal(fixture.attempts(), 1);
+  }],
   ["process shutdown drains HTTP requests before closing MongoDB", async () => {
     const events = [];
     const processStub = new EventEmitter();

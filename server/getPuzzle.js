@@ -1,5 +1,5 @@
 const { connectToDb, getDb } = require("./db");
-const { processPuzzleData } = require("./utils");
+const { handleError, processPuzzleData } = require("./utils");
 
 // Function to fetch a puzzle by its ID from the database
 const fetchPuzzleById = (puzzlesCollection, puzzleId) => {
