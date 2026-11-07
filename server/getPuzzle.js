@@ -1,10 +1,10 @@
-const { connectToDb, getDb } = require("./db");
+const { connectToDb, getDb, QUERY_TIMEOUT_MS } = require("./db");
 const { handleError, processPuzzleData } = require("./utils");
 const { isValidPuzzleId } = require("./validation");
 
 // Function to fetch a puzzle by its ID from the database
 const fetchPuzzleById = (puzzlesCollection, puzzleId) => {
-  return puzzlesCollection.findOne({ id: puzzleId });
+  return puzzlesCollection.findOne({ id: puzzleId }, { maxTimeMS: QUERY_TIMEOUT_MS });
 };
 
 // Function to handle sending the response

@@ -2,6 +2,8 @@ const { MongoClient } = require("mongodb");
 const dotenv = require("dotenv");
 dotenv.config();
 
+const QUERY_TIMEOUT_MS = 5_000;
+
 let dbConnection;
 let connectionPromise;
 let closePromise;
@@ -15,6 +17,13 @@ const getConnection = () => {
     connectionPromise = MongoClient.connect(process.env.MONGO_URL, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      maxConnecting: 2,
+      waitQueueTimeoutMS: 2_000,
+      serverSelectionTimeoutMS: 5_000,
+      connectTimeoutMS: 5_000,
+      socketTimeoutMS: 10_000,
     })
       .then(async (client) => {
         try {
@@ -62,4 +71,5 @@ module.exports = {
   },
   getDb: () => dbConnection,
   closeDb,
+  QUERY_TIMEOUT_MS,
 };

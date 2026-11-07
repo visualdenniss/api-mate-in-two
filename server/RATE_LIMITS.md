@@ -1,4 +1,4 @@
-# API rate limits
+# API resource limits
 
 The defaults target the current single-process Render Free service:
 
@@ -37,6 +37,29 @@ require a shared store and shared cooldown state before scaling.
 Tune `DEFAULT_LIMITS` in `rateLimit.js` against observed legitimate traffic.
 People sharing a public IP also share a quota. These application limits protect
 database work; Render's edge protection handles network floods.
+
+## Database work
+
+| Resource | Limit |
+| --- | --- |
+| Query connections per MongoDB server | 10; monitoring connections are separate |
+| Minimum pooled connections | 0 |
+| Concurrent connection establishment per pool | 2 |
+| Waiting for a free pooled connection | 2 seconds |
+| Server selection and connection establishment | 5 seconds each |
+| Server execution of each puzzle query | 5 seconds |
+| Socket inactivity | 10 seconds |
+
+The shared client owns the pool settings. Every active puzzle read supplies
+`maxTimeMS`, including both random-puzzle paths and the single-puzzle lookup.
+MongoDB enforces this execution limit; the application does not merely stop
+waiting while leaving an unrestricted query running.
+
+These are separate phase budgets, not a single five-second HTTP deadline.
+Pool waits, server selection, transfer time and the driver's bounded read retries
+can add latency. Render instance startup happens before these application limits.
+Database failures retain controlled, generic error responses. Request parameters
+cannot override the limits. Tune the defaults against normal query latency.
 
 Run `npm test` from the server directory. The tests use mocked database access
 and local HTTP servers; they do not access the deployed application or credentials.

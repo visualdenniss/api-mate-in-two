@@ -1,4 +1,4 @@
-const { connectToDb, getDb } = require("./db");
+const { connectToDb, getDb, QUERY_TIMEOUT_MS } = require("./db");
 const { handleError, processMultiplePuzzleData } = require("./utils");
 const { parseExcludedIds } = require("./validation");
 
@@ -7,13 +7,18 @@ const fetchRandomPuzzles = (puzzlesCollection, exclude = []) => {
   if (exclude.length > 0) {
     console.log(exclude);
     return puzzlesCollection
-      .aggregate([
-        { $match: { puzzleId: { $nin: exclude } } },
-        { $sample: { size: 30 } },
-      ])
+      .aggregate(
+        [
+          { $match: { puzzleId: { $nin: exclude } } },
+          { $sample: { size: 30 } },
+        ],
+        { maxTimeMS: QUERY_TIMEOUT_MS },
+      )
       .toArray();
   } else {
-    return puzzlesCollection.aggregate([{ $sample: { size: 30 } }]).toArray();
+    return puzzlesCollection
+      .aggregate([{ $sample: { size: 30 } }], { maxTimeMS: QUERY_TIMEOUT_MS })
+      .toArray();
   }
 };
 

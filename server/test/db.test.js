@@ -135,6 +135,32 @@ const tests = [
     await connect(fixture.api);
     assert.equal(fixture.attempts(), 1);
   }],
+  ["connection setup enforces finite pool, queue and network budgets", async () => {
+    let options;
+    const fixture = loadDatabase(async (attempt, uri, clientOptions) => {
+      options = clientOptions;
+      return makeClient();
+    });
+    await connect(fixture.api);
+    const expected = {
+      maxPoolSize: 10, minPoolSize: 0, maxConnecting: 2,
+      waitQueueTimeoutMS: 2000, serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000, socketTimeoutMS: 10000,
+    };
+    for (const [key, value] of Object.entries(expected)) assert.equal(options[key], value);
+
+    // Exercise the installed driver's option parser without opening a connection.
+    const { MongoClient } = require("mongodb");
+    const client = new MongoClient(
+      "mongodb://database.invalid/puzzles?maxPoolSize=0&waitQueueTimeoutMS=0&socketTimeoutMS=0",
+      options,
+    );
+    try {
+      for (const [key, value] of Object.entries(expected)) assert.equal(client.options[key], value);
+    } finally {
+      await client.close();
+    }
+  }],
   ["database selection failure closes the client before retry", async () => {
     const failure = new Error("Database unavailable");
     const failed = makeClient();
@@ -326,6 +352,77 @@ const tests = [
       assert.deepEqual(received[received.length - 1], expected);
     }
     assert.equal(fixture.attempts(), 1);
+  }],
+  ["both puzzle queries enforce server time limits regardless of client parameters", async () => {
+    const queries = [];
+    const puzzle = { id: "123", algebraic: { white: ["Ka1"], black: ["Kh8"] } };
+    const client = makeClient({
+      collection() {
+        return {
+          async findOne(filter, options) {
+            queries.push({ operation: "detail", options });
+            return puzzle;
+          },
+          aggregate(pipeline, options) {
+            queries.push({ operation: "list", options });
+            return { toArray: async () => [puzzle] };
+          },
+        };
+      },
+    });
+    const fixture = loadDatabase(async () => client);
+    const dependencies = {
+      "./db": fixture.api, "./utils": require("../utils"), "./validation": validation,
+    };
+    const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
+    const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
+    assert.equal((await callRoute(getPuzzle, {
+      params: { id: "123" }, query: { maxTimeMS: "0" },
+    })).status, 200);
+    for (const query of [{}, { exclude: "456" }, { exclude: "456", maxTimeMS: "0" }]) {
+      assert.equal((await callRoute(getPuzzles, { query })).status, 200);
+    }
+    assert.deepEqual(queries.map((query) => query.operation), ["detail", "list", "list", "list"]);
+    for (const query of queries) assert.equal(query.options.maxTimeMS, 5000);
+    assert.equal(fixture.attempts(), 1);
+  }],
+  ["database timeout failures stay controlled and do not discard a healthy client", async () => {
+    const failures = [
+      Object.assign(new Error("Private query timeout details"), { name: "MongoServerError", code: 50 }),
+      Object.assign(new Error("Private pool timeout details"), { name: "MongoWaitQueueTimeoutError" }),
+      Object.assign(new Error("Private socket timeout details"), { name: "MongoNetworkTimeoutError" }),
+    ];
+    for (const failure of failures) {
+      let fail = true;
+      const puzzle = { id: "123", algebraic: { white: ["Ka1"], black: ["Kh8"] } };
+      const client = makeClient({
+        collection() {
+          return {
+            async findOne() { if (fail) throw failure; return puzzle; },
+            aggregate: () => ({ toArray: async () => { if (fail) throw failure; return [puzzle]; } }),
+          };
+        },
+      });
+      const fixture = loadDatabase(async () => client);
+      const utils = loadModule("utils.js", { "./toFen": require("../toFen") });
+      const dependencies = { "./db": fixture.api, "./utils": utils, "./validation": validation };
+      const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
+      const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
+      const responses = await Promise.all([
+        callRoute(getPuzzles, { query: {} }),
+        callRoute(getPuzzle, { params: { id: "123" } }),
+      ]);
+      for (const response of responses) {
+        assert.equal(response.status, 500);
+        assert.equal(response.body.error, "Internal Server Error");
+        assert.equal(JSON.stringify(response.body).includes(failure.message), false);
+      }
+      fail = false;
+      assert.equal((await callRoute(getPuzzle, { params: { id: "123" } })).status, 200);
+      assert.equal((await callRoute(getPuzzles, { query: {} })).status, 200);
+      assert.equal(fixture.attempts(), 1);
+      assert.equal(client.closes(), 0);
+    }
   }],
   ["database query failures return controlled errors from both routes", async () => {
     const failure = new Error("Private database failure details");
