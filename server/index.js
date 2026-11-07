@@ -2,20 +2,19 @@ const express = require('express');
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
-const bodyParser = require('body-parser'); // Import bodyParser for parsing POST request bodies
 const { getPuzzles } = require('./getPuzzles');
 const { getPuzzle } = require('./getPuzzle');
 const { closeDb } = require('./db');
+const { createRateProtection } = require('./rateLimit');
 // const { getAllAuthorList } = require("./getAllAuthorList");
 
-// Middleware for parsing JSON bodies
-app.use(bodyParser.json());
-app.use(cors());
-app.use(express.json());
+const rateProtection = createRateProtection();
+app.use(cors({ exposedHeaders: ['Retry-After', 'RateLimit', 'RateLimit-Policy'] }));
+app.use(rateProtection.middleware);
 
 // routes
 
-app.get('/', getPuzzles);
+app.get('/', rateProtection.batches, getPuzzles);
 app.get('/:id', getPuzzle);
 
 const port = process.env.PORT || 8000;
@@ -33,6 +32,8 @@ const shutdown = () => {
     } catch (shutdownError) {
       console.error('Failed to shut down cleanly:', shutdownError);
       process.exitCode = 1;
+    } finally {
+      rateProtection.shutdown();
     }
   });
 };

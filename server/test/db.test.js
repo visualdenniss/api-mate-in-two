@@ -370,15 +370,19 @@ const tests = [
     express.json = () => () => {};
     loadModule("index.js", {
       express, cors: () => () => {}, dotenv: { config() {} },
-      "body-parser": { json: () => () => {} },
       "./getPuzzles": { getPuzzles() {} }, "./getPuzzle": { getPuzzle() {} },
       "./db": { async closeDb() { events.push("database close"); } },
+      "./rateLimit": {
+        createRateProtection() {
+          return { middleware: [], batches() {}, shutdown() { events.push("rate-limit shutdown"); } };
+        },
+      },
     }, { process: processStub });
     processStub.emit("SIGTERM");
     processStub.emit("SIGINT");
     assert.deepEqual(events, ["drain"]);
     await drained();
-    assert.deepEqual(events, ["drain", "database close"]);
+    assert.deepEqual(events, ["drain", "database close", "rate-limit shutdown"]);
   }],
 ];
 
