@@ -1,4 +1,5 @@
 const { Board } = require("./toFen");
+const { logError } = require("./logging");
 
 // Function to convert algebraic notation to FEN format
 function convertToFen(algebraic) {
@@ -43,7 +44,7 @@ const processMultiplePuzzleData = (puzzles) => {
 
 // Function to handle errors
 const handleError = (res, error, message = "Internal Server Error") => {
-  console.error(error);
+  logError("database_query_failed", error);
   res.status(500).json({ error: message });
 };
 

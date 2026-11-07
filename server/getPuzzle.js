@@ -21,7 +21,6 @@ const getPuzzle = (req, res) => {
 
   connectToDb((err) => {
     if (err) {
-      console.error("Failed to connect to database:", err);
       return res.status(500).json({ error: "Database connection failed" });
     }
 

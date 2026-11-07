@@ -5,11 +5,10 @@ const { parseExcludedIds } = require("./validation");
 // Function to fetch a random puzzle from the database
 const fetchRandomPuzzles = (puzzlesCollection, exclude = []) => {
   if (exclude.length > 0) {
-    console.log(exclude);
     return puzzlesCollection
       .aggregate(
         [
-          { $match: { puzzleId: { $nin: exclude } } },
+          { $match: { id: { $nin: exclude } } },
           { $sample: { size: 30 } },
         ],
         { maxTimeMS: QUERY_TIMEOUT_MS },
@@ -35,7 +34,6 @@ const getPuzzles = (req, res) => {
 
   connectToDb((err) => {
     if (err) {
-      console.error("Failed to connect to database:", err);
       return res.status(500).json({ error: "Database connection failed" });
     }
 

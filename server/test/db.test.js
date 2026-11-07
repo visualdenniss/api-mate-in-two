@@ -24,7 +24,13 @@ function loadModule(filename, dependencies, globals = {}) {
   return module.exports;
 }
 
-function loadDatabase(connect) {
+function loadLogging(lines) {
+  return loadModule("logging.js", {}, {
+    console: { error(line) { lines.push(line); } },
+  });
+}
+
+function loadDatabase(connect, logging = { logError() {} }) {
   let attempts = 0;
   const api = loadModule("db.js", {
     mongodb: {
@@ -33,6 +39,7 @@ function loadDatabase(connect) {
       },
     },
     dotenv: { config() {} },
+    "./logging": logging,
   });
   return { api, attempts: () => attempts };
 }
@@ -107,10 +114,11 @@ const tests = [
   ["failed initialization notifies all waiters and permits one shared retry", async () => {
     const failure = new Error("Connection unavailable");
     const client = makeClient();
+    const logged = [];
     const fixture = loadDatabase(async (attempt) => {
       if (attempt === 1) throw failure;
       return client;
-    });
+    }, loadLogging(logged));
     const results = await Promise.allSettled(
       Array.from({ length: 10 }, () => connect(fixture.api)),
     );
@@ -120,6 +128,9 @@ const tests = [
     await Promise.all(Array.from({ length: 10 }, () => connect(fixture.api)));
     assert.equal(fixture.attempts(), 2);
     assert.equal(fixture.api.getDb(), client.db());
+    assert.deepEqual(logged.map((line) => JSON.parse(line)), [
+      { event: "database_connection_failed", type: "Error" },
+    ]);
   }],
   ["request callback failures do not discard the shared connection", async () => {
     const fixture = loadDatabase(async () => makeClient());
@@ -325,7 +336,7 @@ const tests = [
         return {
           aggregate(pipeline) {
             const match = pipeline.find((stage) => stage.$match);
-            received.push(match ? Array.from(Object.values(match.$match)[0].$nin) : []);
+            received.push(match ? Array.from(match.$match.id.$nin) : []);
             return { toArray: async () => [puzzle] };
           },
         };
@@ -352,6 +363,103 @@ const tests = [
       assert.deepEqual(received[received.length - 1], expected);
     }
     assert.equal(fixture.attempts(), 1);
+  }],
+  ["exclusions filter stored IDs before sampling, regardless of response aliases", async () => {
+    const requestLogs = [];
+    const puzzles = [
+      { id: "123" },
+      { id: "456", puzzleId: "789" },
+      { id: "789", puzzleId: "123" },
+    ].map((puzzle) => ({ ...puzzle, algebraic: { white: ["Ka1"], black: ["Kh8"] } }));
+    const client = makeClient({
+      collection() {
+        return {
+          aggregate(pipeline) {
+            let selected = puzzles;
+            for (const stage of pipeline) {
+              if (stage.$match) {
+                for (const [field, condition] of Object.entries(stage.$match)) {
+                  // MongoDB $nin also matches documents missing the queried field.
+                  selected = selected.filter((puzzle) => !condition.$nin.includes(puzzle[field]));
+                }
+              }
+              if (stage.$sample) selected = selected.slice(0, stage.$sample.size);
+            }
+            return { toArray: async () => selected };
+          },
+        };
+      },
+    });
+    const fixture = loadDatabase(async () => client);
+    const { getPuzzles } = loadModule("getPuzzles.js", {
+      "./db": fixture.api, "./utils": require("../utils"), "./validation": validation,
+    }, {
+      console: {
+        log(...args) { requestLogs.push(args); },
+        error(...args) { requestLogs.push(args); },
+      },
+    });
+    const response = await callRoute(getPuzzles, { query: { exclude: "123,456" } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.map((puzzle) => puzzle.puzzleId), ["789"]);
+    assert.deepEqual(requestLogs, []);
+  }],
+  ["error logs retain safe diagnostics without private or malformed metadata", async () => {
+    const logged = [];
+    const { logError } = loadLogging(logged);
+    const privateDetails = "mongodb+srv://fixture-user:fixture-password@cluster.invalid/puzzles";
+    const failure = Object.assign(new Error(privateDetails), {
+      name: "MongoServerError", code: 50,
+      cause: { uri: privateDetails, path: "$PRIVATE_ROOT/server/db.js", exclude: ["123", "456"] },
+    });
+    logError("database_query_failed", failure);
+    logError("database_connection_failed", { name: "MongoNetworkError", code: "ECONNRESET" });
+    logError(privateDetails, { name: privateDetails, code: privateDetails });
+    logError("shutdown_failed", null);
+    logError("shutdown_failed", { get name() { throw new Error(privateDetails); } });
+    for (const code of [NaN, Infinity, -1, 2_147_483_648, 1.5, {}, [50]]) {
+      logError("database_query_failed", { name: "Error", code });
+    }
+    assert.deepEqual(logged.slice(0, 5).map((line) => JSON.parse(line)), [
+      { event: "database_query_failed", type: "MongoServerError", code: 50 },
+      { event: "database_connection_failed", type: "MongoNetworkError", code: "ECONNRESET" },
+      { event: "operation_failed", type: "Error" },
+      { event: "shutdown_failed", type: "Error" },
+      { event: "shutdown_failed", type: "Error" },
+    ]);
+    for (const line of logged.slice(5)) {
+      assert.deepEqual(JSON.parse(line), { event: "database_query_failed", type: "Error" });
+    }
+    for (const secret of [privateDetails, "fixture-password", "$PRIVATE_ROOT", "exclude", "stack", "cause"]) {
+      assert.equal(logged.join("\n").includes(secret), false);
+    }
+  }],
+  ["connection failures log once without raw errors from either request handler", async () => {
+    const logged = [];
+    const rawLogs = [];
+    const failure = new Error("mongodb://fixture-user:fixture-password@database.invalid/puzzles");
+    const fixture = loadDatabase(async () => { throw failure; }, loadLogging(logged));
+    const dependencies = {
+      "./db": fixture.api, "./utils": require("../utils"), "./validation": validation,
+    };
+    const globals = { console: {
+      log(...args) { rawLogs.push(args); },
+      error(...args) { rawLogs.push(args); },
+    } };
+    const { getPuzzles } = loadModule("getPuzzles.js", dependencies, globals);
+    const { getPuzzle } = loadModule("getPuzzle.js", dependencies, globals);
+    const responses = await Promise.all([
+      callRoute(getPuzzles, { query: {} }),
+      callRoute(getPuzzle, { params: { id: "123" } }),
+    ]);
+    for (const response of responses) {
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error, "Database connection failed");
+    }
+    assert.deepEqual(logged.map((line) => JSON.parse(line)), [
+      { event: "database_connection_failed", type: "Error" },
+    ]);
+    assert.deepEqual(rawLogs, []);
   }],
   ["both puzzle queries enforce server time limits regardless of client parameters", async () => {
     const queries = [];
@@ -404,7 +512,9 @@ const tests = [
         },
       });
       const fixture = loadDatabase(async () => client);
-      const utils = loadModule("utils.js", { "./toFen": require("../toFen") });
+      const utils = loadModule("utils.js", {
+        "./toFen": require("../toFen"), "./logging": { logError() {} },
+      });
       const dependencies = { "./db": fixture.api, "./utils": utils, "./validation": validation };
       const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
       const { getPuzzle } = loadModule("getPuzzle.js", dependencies);
@@ -425,7 +535,9 @@ const tests = [
     }
   }],
   ["database query failures return controlled errors from both routes", async () => {
-    const failure = new Error("Private database failure details");
+    const failure = Object.assign(new Error("Private database failure details"), {
+      name: "MongoServerError", code: 50,
+    });
     const logged = [];
     const client = makeClient({
       collection() {
@@ -436,8 +548,8 @@ const tests = [
       },
     });
     const fixture = loadDatabase(async () => client);
-    const utils = loadModule("utils.js", { "./toFen": require("../toFen") }, {
-      console: { error(error) { logged.push(error); } },
+    const utils = loadModule("utils.js", {
+      "./toFen": require("../toFen"), "./logging": loadLogging(logged),
     });
     const dependencies = { "./db": fixture.api, "./utils": utils, "./validation": validation };
     const { getPuzzles } = loadModule("getPuzzles.js", dependencies);
@@ -451,7 +563,10 @@ const tests = [
       assert.equal(response.body.error, "Internal Server Error");
       assert.equal(JSON.stringify(response.body).includes(failure.message), false);
     }
-    assert.deepEqual(logged, [failure, failure]);
+    assert.deepEqual(logged.map((line) => JSON.parse(line)), Array(2).fill({
+      event: "database_query_failed", type: "MongoServerError", code: 50,
+    }));
+    assert.equal(logged.join("\n").includes(failure.message), false);
     assert.equal(fixture.attempts(), 1);
   }],
   ["process shutdown drains HTTP requests before closing MongoDB", async () => {
@@ -469,6 +584,7 @@ const tests = [
       express, cors: () => () => {}, dotenv: { config() {} },
       "./getPuzzles": { getPuzzles() {} }, "./getPuzzle": { getPuzzle() {} },
       "./db": { async closeDb() { events.push("database close"); } },
+      "./logging": { logError() {} },
       "./rateLimit": {
         createRateProtection() {
           return { middleware: [], batches() {}, shutdown() { events.push("rate-limit shutdown"); } };

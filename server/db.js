@@ -1,5 +1,6 @@
 const { MongoClient } = require("mongodb");
 const dotenv = require("dotenv");
+const { logError } = require("./logging");
 dotenv.config();
 
 const QUERY_TIMEOUT_MS = 5_000;
@@ -36,6 +37,7 @@ const getConnection = () => {
       })
       .catch((error) => {
         connectionPromise = undefined;
+        logError("database_connection_failed", error);
         throw error;
       });
   }
@@ -65,7 +67,6 @@ module.exports = {
     return getConnection()
       .then(() => cb(null))
       .catch((err) => {
-        console.log(err);
         return cb(err);
       });
   },

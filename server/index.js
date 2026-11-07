@@ -6,6 +6,7 @@ const { getPuzzles } = require('./getPuzzles');
 const { getPuzzle } = require('./getPuzzle');
 const { closeDb } = require('./db');
 const { createRateProtection } = require('./rateLimit');
+const { logError } = require('./logging');
 // const { getAllAuthorList } = require("./getAllAuthorList");
 
 const rateProtection = createRateProtection();
@@ -30,7 +31,7 @@ const shutdown = () => {
       await closeDb();
       if (error) throw error;
     } catch (shutdownError) {
-      console.error('Failed to shut down cleanly:', shutdownError);
+      logError('shutdown_failed', shutdownError);
       process.exitCode = 1;
     } finally {
       rateProtection.shutdown();

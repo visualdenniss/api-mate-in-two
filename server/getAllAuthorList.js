@@ -1,9 +1,9 @@
 const { connectToDb, getDb } = require("./db");
+const { logError } = require("./logging");
 
 const getAllAuthorList = (req, res) => {
   connectToDb((err) => {
     if (err) {
-      console.error("Failed to connect to database:", err);
       return res.status(500).json({ error: "Database connection failed" });
     }
 
@@ -13,7 +13,7 @@ const getAllAuthorList = (req, res) => {
     // Fetch all puzzles from the database
     puzzlesCollection.find().toArray((err, puzzles) => {
       if (err) {
-        console.error("Error fetching puzzles:", err);
+        logError("author_list_query_failed", err);
         return res.status(500).json({ error: "Failed to fetch puzzles" });
       }
 
